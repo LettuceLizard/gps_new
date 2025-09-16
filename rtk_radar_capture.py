@@ -545,8 +545,8 @@ def main():
 
     use_rtk = get_capture_mode()
 
-    BASE_STATION_PORT = '/dev/ttyUSB0'  # Port with GPS fix
-    ROVER_PORT = '/dev/ttyUSB1'         # Rover port
+    BASE_STATION_PORT = '/dev/ttyUSB1'  # Base station port
+    ROVER_PORT = '/dev/ttyUSB0'         # Rover port
     RADAR_HOST = '192.168.1.10'
     RADAR_PORT = 7
     BUFFER_SIZE = 1024
