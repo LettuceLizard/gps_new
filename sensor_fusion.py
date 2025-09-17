@@ -64,8 +64,7 @@ rs. Format [x, y, z]
         
         self.translations = translations
         self.rotations = rotations
-        self._rotator = spatial.transform.Rotation.from_euler("xyz", [rotations[0], rotation
-s[1], rotations[2]], degrees=degrees)
+        self._rotator = spatial.transform.Rotation.from_euler("xyz", [rotations[0], rotations[1], rotations[2]], degrees=degrees)
         self.degrees = degrees
 
     def apply(self, v: np.ndarray) -> np.ndarray:

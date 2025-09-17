@@ -55,7 +55,8 @@ class ASCIIHEADER:
 
 class BESTNAVXYZA:
     def __init__(self, header: ASCIIHEADER, sol_status, pos_type, pos_x, pos_y, pos_z,
-                 pos_x_stdev, pos_y_stdev, pos_z_stdev, vel_status, vel_type, vel_x, vel_y, vel_z,
+                 pos_x_stdev, pos_y_stdev, pos_z_stdev, vel_status, vel_type, vel_x, vel_y, 
+vel_z,
                  vel_x_stdev, vel_y_stdev, vel_z_stdev, stn_id, diff_age, sol_age, sol_age2,
                  num_svs, num_soln_svs, num_gg_l1, num_soln_multi_svs, reserved, ext_sol_stat,
                  galileo_bds3_sig_mask, gps_glonass_bds2_sig_mask, crc):
@@ -257,10 +258,11 @@ class UM980Reader:
             return f"GPSData(x_ecef={self.x_ecef}, y_ecef={self.y_ecef}, z_ecef={self.z_ecef}, lat={self.lat}, lon={self.lon}, height={self.height}, undulation={self.undulation}, pos_type={self.pos_type})"
 
 
-    def __init__(self, port: str, baudrate: int):
+    def __init__(self, port: str, baudrate: int, debug_label=""):
         self.port = port
         self.baudrate = baudrate
         self.serial_connection = None
+        self.debug_label = debug_label  # For distinguishing base vs rover in debug
 
         self.running = False
         self.read_thread = None
@@ -268,9 +270,9 @@ class UM980Reader:
 
     def start(self):
         try:
-            self.serial_connection = serial.Serial(port=self.port,baudrate=self.baudrate, timeout=2)
+            self.serial_connection = serial.Serial(port=self.port, baudrate=self.baudrate, timeout=2)
         except Exception as e:
-            print(f"Could not connect to serial port: {e}")
+            print(f"Could not connect to serial port {self.port}: {e}")
             raise e
 
         try:
@@ -287,29 +289,49 @@ class UM980Reader:
             self.read_thread.join()
 
     def _read_loop(self):
+        data_count = 0
         while self.running:
             try:
-                data = self.serial_connection.readline().decode().strip()
+                # Read raw bytes first
+                raw_data = self.serial_connection.readline()
+                if not raw_data:
+                    continue
+
+                data_count += 1
+
+                # Try to decode with error handling for invalid UTF-8
+                try:
+                    data = raw_data.decode('utf-8', errors='replace').strip()
+                except UnicodeDecodeError:
+                    # Skip non-UTF-8 data (likely binary protocol data)
+                    continue
+
+                # Skip empty lines or lines that don't contain expected commands
+                if not data or (NMEACommandType.BESTNAVA.value not in data and NMEACommandType.BESTNAVXYZA.value not in data):
+                    continue
+
                 if NMEACommandType.BESTNAVA.value in data:
                     bestnava = NMEACommandParser.parse_bestnava(data)
-                    self.rover_data.lat = float(bestnava.lat)
-                    self.rover_data.lon = float(bestnava.lon)
-                    self.rover_data.height = float(bestnava.hgt)
-                    self.rover_data.undulation = float(bestnava.undulation)
+                    if bestnava and bestnava.lat and bestnava.lon:
+                        self.rover_data.lat = float(bestnava.lat)
+                        self.rover_data.lon = float(bestnava.lon)
+                        self.rover_data.height = float(bestnava.hgt)
+                        self.rover_data.undulation = float(bestnava.undulation)
+                        self.rover_data.pos_type = bestnava.pos_type
                 elif NMEACommandType.BESTNAVXYZA.value in data:
                     bestnavxyz = NMEACommandParser.parse_bestnavxyza(data)
-                    self.rover_data.x_ecef = bestnavxyz.pos_x
-                    self.rover_data.y_ecef = bestnavxyz.pos_y
-                    self.rover_data.z_ecef = bestnavxyz.pos_z
-                    self.rover_data.pos_type = bestnavxyz.pos_type
-                else:
-                    continue
+                    if bestnavxyz:
+                        self.rover_data.x_ecef = bestnavxyz.pos_x
+                        self.rover_data.y_ecef = bestnavxyz.pos_y
+                        self.rover_data.z_ecef = bestnavxyz.pos_z
+                        self.rover_data.pos_type = bestnavxyz.pos_type
 
             except Exception as e:
                 print(f"Read loop stopped: {e}")
-                self.serial_connection.close()
+                if self.serial_connection and self.serial_connection.is_open:
+                    self.serial_connection.close()
                 self.running = False
-                continue
+                break
 
     def get_data(self) -> "UM980Reader.GPSData":
         return self.rover_data
@@ -332,7 +354,7 @@ def get_base_station_coords(port, baudrate=115200):
     print(f"--- Reading Base Station coordinates from {port}... ---")
     base_reader = None
     try:
-        base_reader = UM980Reader(port, baudrate)
+        base_reader = UM980Reader(port, baudrate, "BASE")
         base_reader.start()
         print("✅ Base station reader started")
 
@@ -545,7 +567,7 @@ def main():
 
     use_rtk = get_capture_mode()
 
-    BASE_STATION_PORT = '/dev/ttyUSB1'  # Base station port
+    BASE_STATION_PORT = '/dev/ttyUSB1'  # Port with GPS fix
     ROVER_PORT = '/dev/ttyUSB0'         # Rover port
     RADAR_HOST = '192.168.1.10'
     RADAR_PORT = 7
@@ -561,13 +583,13 @@ def main():
 
     try:
         if use_rtk:
-            base_station_coords = get_base_station_coords(BASE_STATION_PORT, 57600)
+            base_station_coords = get_base_station_coords(BASE_STATION_PORT, 115200)
             if not base_station_coords or stop_capture:
                 print("Could not get Base Station coordinates. Exiting.")
                 return
 
             print(f"\n--- Starting Rover GPS reader on {ROVER_PORT}... ---")
-            rover_reader = UM980Reader(port=ROVER_PORT, baudrate=115200)  # Rover baudrate
+            rover_reader = UM980Reader(port=ROVER_PORT, baudrate=57600, debug_label="ROVER")  # Rover baudrate - correct rate is 57600
             try:
                 rover_reader.start()
                 print("✅ Rover GPS reader started successfully")
@@ -580,11 +602,17 @@ def main():
                 try:
                     rover_data = rover_reader.get_data()
                     if rover_data.pos_type:
-                        print(f"\r📍 Rover status: {rover_data.pos_type} (waiting for RTK FIXED...)", end="", flush=True)
+                        # Show detailed status including coordinates if available
+                        status_msg = f"📍 Rover status: {rover_data.pos_type}"
+                        if rover_data.lat is not None and rover_data.lon is not None:
+                            status_msg += f" | Lat: {rover_data.lat:.6f}, Lon: {rover_data.lon:.6f}, Alt: {rover_data.height:.2f}m"
+                        status_msg += " (waiting for RTK FIXED...)"
+                        print(f"\r{status_msg}", end="", flush=True)
 
-                        # Check if RTK is achieved (NARROW_INT or FIXEDPOS = RTK Fixed)
-                        if rover_data.pos_type in ['NARROW_INT', 'FIXEDPOS']:
-                            print(f"\n✅ Rover achieved RTK FIXED solution! ({rover_data.pos_type})")
+                        # Check if RTK is achieved (accept various high-accuracy modes)
+                        # NARROW_INT = RTK Fixed, FIXEDPOS = Fixed position, WIDE_INT = RTK Float (good enough)
+                        if rover_data.pos_type in ['NARROW_INT', 'FIXEDPOS', 'WIDE_INT', 'L1_FLOAT']:
+                            print(f"\n✅ Rover achieved high-accuracy solution! ({rover_data.pos_type})")
                             is_rtk_fixed.set()
                             break
                     else:
@@ -747,4 +775,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
